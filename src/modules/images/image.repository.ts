@@ -1,4 +1,4 @@
-import { and, count, desc, eq } from 'drizzle-orm';
+import { and, count, desc, eq, sql } from 'drizzle-orm';
 import { db } from '../../infrastructure/database/client';
 import {
   imageVariants,
@@ -49,27 +49,30 @@ export class DrizzleImageRepository implements ImageRepository {
     };
   }
 
-  async deleteOwnedById(imageId: string, userId: string): Promise<{ image: Image; variants: ImageVariant[] } | null> {
-    return db.transaction(async (transaction) => {
-      const [image] = await transaction
-        .select()
-        .from(images)
-        .where(and(eq(images.id, imageId), eq(images.userId, userId)))
-        .limit(1);
+  async findOwnedWithVariants(imageId: string, userId: string): Promise<{ image: Image; variants: ImageVariant[] } | null> {
+    const image = await this.findOwnedById(imageId, userId);
 
-      if (!image) {
-        return null;
-      }
+    if (!image) return null;
 
-      const variants = await transaction
-        .select()
+    const variants = await db.select().from(imageVariants).where(eq(imageVariants.imageId, image.id));
+    return { image, variants };
+  }
+
+  async deleteOwnedById(imageId: string, userId: string): Promise<boolean> {
+    const deleted = await db.delete(images).where(and(eq(images.id, imageId), eq(images.userId, userId))).returning({ id: images.id });
+    return deleted.length === 1;
+  }
+
+  async getOwnedStorageUsage(userId: string): Promise<number> {
+    const [originals, variants] = await Promise.all([
+      db.select({ total: sql<string>`coalesce(sum(${images.sizeBytes}), 0)` }).from(images).where(eq(images.userId, userId)),
+      db.select({ total: sql<string>`coalesce(sum(${imageVariants.sizeBytes}), 0)` })
         .from(imageVariants)
-        .where(eq(imageVariants.imageId, image.id));
+        .innerJoin(images, eq(imageVariants.imageId, images.id))
+        .where(eq(images.userId, userId)),
+    ]);
 
-      await transaction.delete(images).where(and(eq(images.id, imageId), eq(images.userId, userId)));
-
-      return { image, variants };
-    });
+    return Number(originals[0]?.total ?? 0) + Number(variants[0]?.total ?? 0);
   }
 
   async createVariant(input: NewImageVariant): Promise<ImageVariant> {

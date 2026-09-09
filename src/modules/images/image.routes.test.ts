@@ -32,6 +32,7 @@ class InMemoryUserRepository implements UserRepository {
 class InMemoryImageRepository implements ImageRepository {
   readonly images: Image[] = [];
   readonly variants: ImageVariant[] = [];
+  failVariantCreation = false;
 
   async create(input: NewImage): Promise<Image> {
     const image: Image = {
@@ -67,25 +68,43 @@ class InMemoryImageRepository implements ImageRepository {
     };
   }
 
-  async deleteOwnedById(imageId: string, userId: string): Promise<{ image: Image; variants: ImageVariant[] } | null> {
+  async findOwnedWithVariants(imageId: string, userId: string): Promise<{ image: Image; variants: ImageVariant[] } | null> {
     const index = this.images.findIndex((image) => image.id === imageId && image.userId === userId);
 
     if (index < 0) return null;
 
-    const [image] = this.images.splice(index, 1);
+    const image = this.images[index];
 
     if (!image) return null;
 
     const variants = this.variants.filter((variant) => variant.imageId === image.id);
-    for (const variant of variants) {
-      const variantIndex = this.variants.findIndex((item) => item.id === variant.id);
-      if (variantIndex >= 0) this.variants.splice(variantIndex, 1);
-    }
-
     return { image, variants };
   }
 
+  async deleteOwnedById(imageId: string, userId: string): Promise<boolean> {
+    const index = this.images.findIndex((image) => image.id === imageId && image.userId === userId);
+    if (index < 0) return false;
+
+    const [image] = this.images.splice(index, 1);
+    if (!image) return false;
+    this.variants.splice(0, this.variants.length, ...this.variants.filter((variant) => variant.imageId !== image.id));
+    return true;
+  }
+
+  async getOwnedStorageUsage(userId: string): Promise<number> {
+    const imageIds = new Set(this.images.filter((image) => image.userId === userId).map((image) => image.id));
+    const originalBytes = this.images
+      .filter((image) => image.userId === userId)
+      .reduce((total, image) => total + image.sizeBytes, 0);
+    const variantBytes = this.variants
+      .filter((variant) => imageIds.has(variant.imageId))
+      .reduce((total, variant) => total + variant.sizeBytes, 0);
+    return originalBytes + variantBytes;
+  }
+
   async createVariant(input: NewImageVariant): Promise<ImageVariant> {
+    if (this.failVariantCreation) throw new Error('database unavailable');
+
     const variant: ImageVariant = {
       id: input.id ?? randomUUID(),
       imageId: input.imageId,
@@ -247,6 +266,20 @@ describe('image routes', () => {
     });
     const image = upload.json();
 
+    const oversizedTransform = await app.inject({
+      method: 'POST',
+      url: `/images/${image.id}/transform`,
+      headers: {
+        authorization: `Bearer ${token}`,
+        'content-type': 'application/json',
+      },
+      payload: { resize: { width: 10_000, height: 10_000, fit: 'cover' } },
+    });
+    expect(oversizedTransform.statusCode).toBe(413);
+    expect(oversizedTransform.json()).toMatchObject({
+      error: { code: 'TRANSFORMED_IMAGE_DIMENSIONS_TOO_LARGE' },
+    });
+
     const list = await app.inject({
       method: 'GET',
       url: '/images?page=1&limit=10',
@@ -289,6 +322,11 @@ describe('image routes', () => {
       mimeType: 'image/webp',
       width: 100,
       height: 100,
+      transformations: {
+        resize: { width: 100, height: 100, fit: 'cover' },
+        rotate: 90,
+        format: 'webp',
+      },
     });
     const variant = transform.json();
 
@@ -324,6 +362,39 @@ describe('image routes', () => {
     });
     expect(missingAfterDelete.statusCode).toBe(404);
 
+    await app.close();
+  });
+
+  it('returns a server error when persisting a variant fails', async () => {
+    const userRepository = new InMemoryUserRepository();
+    const imageRepository = new InMemoryImageRepository();
+    const storage = new InMemoryStorage();
+    const app = await buildApp({ userRepository, imageRepository, storage });
+    const token = await registerAndGetToken(app, 'persistence-user');
+    const imageBuffer = await sharp({
+      create: { width: 8, height: 6, channels: 3, background: { r: 40, g: 40, b: 220 } },
+    }).png().toBuffer();
+    const upload = await app.inject({
+      method: 'POST',
+      url: '/images',
+      headers: {
+        authorization: `Bearer ${token}`,
+        'content-type': 'multipart/form-data; boundary=persistence-boundary',
+      },
+      payload: makeMultipartBody('persistence-boundary', 'file', 'photo.png', 'image/png', imageBuffer),
+    });
+    imageRepository.failVariantCreation = true;
+
+    const response = await app.inject({
+      method: 'POST',
+      url: `/images/${upload.json().id}/transform`,
+      headers: { authorization: `Bearer ${token}` },
+      payload: { format: 'webp' },
+    });
+
+    expect(response.statusCode).toBe(500);
+    expect(response.json()).toMatchObject({ error: { code: 'INTERNAL_SERVER_ERROR' } });
+    expect(storage.files.size).toBe(1);
     await app.close();
   });
 });

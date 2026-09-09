@@ -19,9 +19,12 @@ export interface ImageVariantResponse extends Omit<ImageVariant, 'storageKey'> {
 }
 
 export class ImageTransformService {
+  private activeTransforms = 0;
+
   constructor(
     private readonly imageRepository: ImageRepository,
     private readonly storage: ObjectStorage,
+    private readonly logger: { error(object: unknown, message: string): void } = console,
   ) {}
 
   async transform(userId: string, imageId: string, rawTransformations: unknown): Promise<ImageVariantResponse> {
@@ -41,9 +44,18 @@ export class ImageTransformService {
       );
     }
 
+    this.acquireSlot();
+
     try {
       const source = await streamToBuffer(await this.storage.get(image.storageKey));
-      const output = await processImage(source, image.mimeType, transformations);
+      let output: Awaited<ReturnType<typeof processImage>>;
+
+      try {
+        output = await processImage(source, image.mimeType, transformations);
+      } catch (error: unknown) {
+        if (error instanceof AppError) throw error;
+        throw new AppError('Não foi possível processar a imagem com os parâmetros informados.', 'INVALID_TRANSFORMATION', 422, { cause: error });
+      }
 
       if (output.buffer.length > env.MAX_UPLOAD_SIZE_BYTES) {
         throw new AppError(
@@ -52,6 +64,8 @@ export class ImageTransformService {
           413,
         );
       }
+
+      await this.ensureWithinStorageQuota(userId, output.buffer.length);
 
       const variantId = randomUUID();
       const storageKey = `variants/${image.id}/${variantId}.${output.extension}`;
@@ -72,20 +86,15 @@ export class ImageTransformService {
 
         return toVariantResponse(variant);
       } catch (error: unknown) {
-        await this.storage.delete(storageKey).catch(() => undefined);
+        try {
+          await this.storage.delete(storageKey);
+        } catch (cleanupError: unknown) {
+          this.logger.error({ cleanupError, error, storageKey }, 'Failed to clean up unpersisted image variant');
+        }
         throw error;
       }
-    } catch (error: unknown) {
-      if (error instanceof AppError) {
-        throw error;
-      }
-
-      throw new AppError(
-        'Não foi possível processar a imagem com os parâmetros informados.',
-        'INVALID_TRANSFORMATION',
-        422,
-        { cause: error },
-      );
+    } finally {
+      this.releaseSlot();
     }
   }
 
@@ -109,6 +118,26 @@ export class ImageTransformService {
       variant,
       stream: await this.storage.get(variant.storageKey),
     };
+  }
+
+  private acquireSlot(): void {
+    if (this.activeTransforms >= env.MAX_CONCURRENT_TRANSFORMS) {
+      throw new AppError('O limite de processamentos simultâneos foi atingido. Tente novamente.', 'TRANSFORM_CONCURRENCY_LIMIT', 503);
+    }
+
+    this.activeTransforms += 1;
+  }
+
+  private releaseSlot(): void {
+    this.activeTransforms -= 1;
+  }
+
+  private async ensureWithinStorageQuota(userId: string, incomingBytes: number): Promise<void> {
+    const currentUsage = await this.imageRepository.getOwnedStorageUsage(userId);
+
+    if (currentUsage + incomingBytes > env.MAX_STORAGE_BYTES_PER_USER) {
+      throw new AppError('O limite de armazenamento do usuário foi atingido.', 'STORAGE_QUOTA_EXCEEDED', 413);
+    }
   }
 }
 
@@ -145,6 +174,13 @@ async function processImage(
   width: number;
   height: number;
 }> {
+  const inputMetadata = await sharp(source, { limitInputPixels: env.MAX_IMAGE_PIXELS }).metadata();
+
+  if (!inputMetadata.width || !inputMetadata.height) {
+    throw new Error('The source image has no dimensions.');
+  }
+
+  validateOutputDimensions(inputMetadata.width, inputMetadata.height, transformations);
   let processor: Sharp = sharp(source, { limitInputPixels: env.MAX_IMAGE_PIXELS });
 
   if (transformations.rotate !== undefined && transformations.rotate !== 0) {
@@ -218,6 +254,54 @@ function resolveFormat(format: Transformations['format'], sourceMimeType: string
 
   const sourceFormat = Object.values(formatInfo).find((item) => item.mimeType === sourceMimeType);
   return sourceFormat ?? formatInfo.png;
+}
+
+function validateOutputDimensions(sourceWidth: number, sourceHeight: number, transformations: Transformations): void {
+  let { width, height } = rotatedDimensions(sourceWidth, sourceHeight, transformations.rotate ?? 0);
+
+  if (transformations.resize) {
+    ({ width, height } = resizedDimensions(width, height, transformations.resize));
+    assertDimensionsWithinLimit(width, height);
+  }
+
+  if (transformations.crop) {
+    const crop = transformations.crop;
+    if (crop.x + crop.width > width || crop.y + crop.height > height) {
+      throw new AppError('O recorte ultrapassa os limites da imagem.', 'INVALID_TRANSFORMATION', 422);
+    }
+    width = crop.width;
+    height = crop.height;
+  }
+
+  assertDimensionsWithinLimit(width, height);
+}
+
+function rotatedDimensions(width: number, height: number, angle: number): { width: number; height: number } {
+  const radians = Math.abs(angle % 180) * Math.PI / 180;
+  return {
+    width: Math.ceil(width * Math.cos(radians) + height * Math.sin(radians)),
+    height: Math.ceil(width * Math.sin(radians) + height * Math.cos(radians)),
+  };
+}
+
+function resizedDimensions(
+  width: number,
+  height: number,
+  resize: NonNullable<Transformations['resize']>,
+): { width: number; height: number } {
+  const scaleX = resize.width / width;
+  const scaleY = resize.height / height;
+
+  if (resize.fit === 'fill' || resize.fit === 'cover') return { width: resize.width, height: resize.height };
+
+  const scale = resize.fit === 'outside' ? Math.max(scaleX, scaleY) : Math.min(scaleX, scaleY);
+  return { width: Math.ceil(width * scale), height: Math.ceil(height * scale) };
+}
+
+function assertDimensionsWithinLimit(width: number, height: number): void {
+  if (width > env.MAX_IMAGE_WIDTH || height > env.MAX_IMAGE_HEIGHT || width * height > env.MAX_IMAGE_PIXELS) {
+    throw new AppError('As dimensões da imagem transformada excedem o limite permitido.', 'TRANSFORMED_IMAGE_DIMENSIONS_TOO_LARGE', 413);
+  }
 }
 
 function applyOutputFormat(processor: Sharp, extension: string, quality: number | undefined): Sharp {

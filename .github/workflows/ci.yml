@@ -46,6 +46,12 @@ jobs:
       - name: Run tests
         run: npm test
 
+      - name: Run database integration tests
+        run: npm run test:integration
+        env:
+          DATABASE_URL: postgres://image_service:image_service@localhost:5432/image_service
+          JWT_SECRET: ci-secret-with-at-least-32-characters
+
       - name: Typecheck
         run: npm run typecheck
 

@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto';
+import { DrizzleQueryError } from 'drizzle-orm';
 import { describe, expect, it } from 'vitest';
 import { buildApp } from '../../app';
 import type { User, NewUser } from '../../infrastructure/database/schema';
@@ -22,6 +23,17 @@ class InMemoryUserRepository implements UserRepository {
 
     this.users.push(user);
     return user;
+  }
+}
+
+class ConcurrentDuplicateUserRepository implements UserRepository {
+  async findByUsername(): Promise<User | null> {
+    return null;
+  }
+
+  async create(): Promise<User> {
+    const error = Object.assign(new Error('duplicate key'), { code: '23505' });
+    throw new DrizzleQueryError('insert into users', [], error);
   }
 }
 
@@ -174,6 +186,19 @@ describe('authentication routes', () => {
       error: { code: 'USERNAME_ALREADY_EXISTS' },
     });
 
+    await app.close();
+  });
+
+  it('maps a database unique violation during concurrent registration to 409', async () => {
+    const app = await buildApp({ userRepository: new ConcurrentDuplicateUserRepository() });
+    const response = await app.inject({
+      method: 'POST',
+      url: '/auth/register',
+      payload: { username: 'race-user', password: 'password123' },
+    });
+
+    expect(response.statusCode).toBe(409);
+    expect(response.json()).toMatchObject({ error: { code: 'USERNAME_ALREADY_EXISTS' } });
     await app.close();
   });
 });

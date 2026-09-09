@@ -37,6 +37,23 @@ describe('LocalStorage', () => {
       await rm(directory, { recursive: true, force: true });
     }
   });
+
+  it('removes a partial file when its input stream fails', async () => {
+    const directory = await mkdtemp(path.join(os.tmpdir(), 'image-service-storage-'));
+    const storage = new LocalStorage(directory);
+
+    try {
+      const failingStream = Readable.from((async function* () {
+        yield Buffer.from('partial-content');
+        throw new Error('stream failed');
+      })());
+
+      await expect(storage.put('originals/user-1/partial.png', failingStream)).rejects.toThrow('stream failed');
+      expect(await storage.exists('originals/user-1/partial.png')).toBe(false);
+    } finally {
+      await rm(directory, { recursive: true, force: true });
+    }
+  });
 });
 
 async function readStream(stream: Readable): Promise<Buffer> {

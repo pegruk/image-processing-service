@@ -11,6 +11,16 @@ describe('application foundation', () => {
     });
 
     expect(response.statusCode).toBe(200);
+
+    const specification = await app.inject({ method: 'GET', url: '/docs/json' });
+    expect(specification.json().paths['/images'].post.requestBody).toMatchObject({
+      required: true,
+      content: {
+        'multipart/form-data': {
+          schema: { required: ['file'] },
+        },
+      },
+    });
     await app.close();
   });
 

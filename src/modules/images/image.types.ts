@@ -19,7 +19,9 @@ export interface ImageRepository {
   create(input: NewImage): Promise<Image>;
   findOwnedById(imageId: string, userId: string): Promise<Image | null>;
   listOwned(userId: string, options: ImageListOptions): Promise<ImageListResult>;
-  deleteOwnedById(imageId: string, userId: string): Promise<{ image: Image; variants: ImageVariant[] } | null>;
+  findOwnedWithVariants(imageId: string, userId: string): Promise<{ image: Image; variants: ImageVariant[] } | null>;
+  deleteOwnedById(imageId: string, userId: string): Promise<boolean>;
+  getOwnedStorageUsage(userId: string): Promise<number>;
   createVariant(input: NewImageVariant): Promise<ImageVariant>;
   findOwnedVariant(variantId: string, userId: string): Promise<ImageVariant | null>;
 }

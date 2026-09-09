@@ -75,6 +75,7 @@ export class ImageService {
       }
 
       const metadata = await this.validateImage(temporaryPath, sizeBytes);
+      await this.ensureWithinStorageQuota(input.userId, sizeBytes);
       const extension = supportedFormats.get(metadata.mimeType);
 
       if (!extension) {
@@ -159,30 +160,39 @@ export class ImageService {
 
   async delete(userId: string, imageId: string): Promise<void> {
     const validImageId = parseImageId(imageId);
-    const deleted = await this.imageRepository.deleteOwnedById(validImageId, userId);
+    const resource = await this.imageRepository.findOwnedWithVariants(validImageId, userId);
 
-    if (!deleted) {
+    if (!resource) {
       throw new AppError('Imagem não encontrada.', 'IMAGE_NOT_FOUND', 404);
     }
 
     try {
-      await this.storage.delete(deleted.image.storageKey);
-      await Promise.all(deleted.variants.map((variant) => this.storage.delete(variant.storageKey)));
+      await Promise.all([
+        this.storage.delete(resource.image.storageKey),
+        ...resource.variants.map((variant) => this.storage.delete(variant.storageKey)),
+      ]);
     } catch (error: unknown) {
       this.logger.error(
         {
           error,
-          imageId: deleted.image.id,
-          storageKeys: [deleted.image.storageKey, ...deleted.variants.map((variant) => variant.storageKey)],
+          imageId: resource.image.id,
+          storageKeys: [resource.image.storageKey, ...resource.variants.map((variant) => variant.storageKey)],
         },
-        'Image metadata deleted but storage cleanup failed',
+        'Storage cleanup failed; image metadata was retained for a retry',
       );
       throw new AppError(
-        'A imagem foi removida do banco, mas o arquivo não pôde ser limpo.',
+        'Não foi possível remover todos os arquivos da imagem.',
         'STORAGE_CLEANUP_FAILED',
         500,
         { cause: error },
       );
+    }
+
+    const deleted = await this.imageRepository.deleteOwnedById(validImageId, userId);
+
+    if (!deleted) {
+      this.logger.error({ imageId: resource.image.id }, 'Image files removed but metadata was not deleted');
+      throw new AppError('Não foi possível remover os metadados da imagem.', 'IMAGE_DELETE_FAILED', 500);
     }
   }
 
@@ -255,6 +265,18 @@ export class ImageService {
       this.logger.error(
         { cleanupError, cause, storageKey },
         'Failed to cleanup image after database persistence failure',
+      );
+    }
+  }
+
+  private async ensureWithinStorageQuota(userId: string, incomingBytes: number): Promise<void> {
+    const currentUsage = await this.imageRepository.getOwnedStorageUsage(userId);
+
+    if (currentUsage + incomingBytes > env.MAX_STORAGE_BYTES_PER_USER) {
+      throw new AppError(
+        'O limite de armazenamento do usuário foi atingido.',
+        'STORAGE_QUOTA_EXCEEDED',
+        413,
       );
     }
   }

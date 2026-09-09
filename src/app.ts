@@ -12,6 +12,7 @@ import { imageRoutes } from './modules/images/image.routes';
 import type { ImageRepository } from './modules/images/image.types';
 import type { ObjectStorage } from './infrastructure/storage/storage.port';
 import multipart from '@fastify/multipart';
+import rateLimit from '@fastify/rate-limit';
 import { registerErrorHandler } from './plugins/error-handler';
 
 export interface BuildAppOptions {
@@ -37,7 +38,7 @@ export async function buildApp(options: BuildAppOptions = {}) {
         description: 'API para upload, armazenamento e processamento de imagens.',
         version: '0.1.0',
       },
-      servers: [{ url: `http://localhost:${env.PORT}` }],
+      servers: [{ url: env.API_BASE_URL ?? `http://localhost:${env.PORT}` }],
       tags: [
         { name: 'System', description: 'Operações de infraestrutura' },
         { name: 'Auth', description: 'Autenticação de usuários' },
@@ -52,6 +53,33 @@ export async function buildApp(options: BuildAppOptions = {}) {
           },
         },
       },
+    },
+    transformObject(documentObject) {
+      if (!('openapiObject' in documentObject)) return documentObject.swaggerObject;
+
+      const document = documentObject.openapiObject as unknown as {
+        paths?: Record<string, { post?: { requestBody?: unknown } }>;
+      };
+      const uploadOperation = document.paths?.['/images']?.post;
+
+      if (uploadOperation) {
+        uploadOperation.requestBody = {
+          required: true,
+          content: {
+            'multipart/form-data': {
+              schema: {
+                type: 'object',
+                required: ['file'],
+                properties: {
+                  file: { type: 'string', format: 'binary', description: 'Imagem JPEG, PNG ou WebP.' },
+                },
+              },
+            },
+          },
+        };
+      }
+
+      return documentObject.openapiObject;
     },
   });
 
@@ -78,6 +106,12 @@ export async function buildApp(options: BuildAppOptions = {}) {
       fileSize: env.MAX_UPLOAD_SIZE_BYTES,
       parts: 1,
     },
+  });
+
+  await app.register(rateLimit, {
+    global: true,
+    max: env.RATE_LIMIT_MAX,
+    timeWindow: '1 minute',
   });
 
   registerErrorHandler(app);

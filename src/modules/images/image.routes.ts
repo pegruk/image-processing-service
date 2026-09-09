@@ -19,7 +19,7 @@ export const imageRoutes: FastifyPluginAsync<ImageRoutesOptions> = async (app, o
   const imageRepository = options.imageRepository ?? new DrizzleImageRepository();
   const storage = options.storage ?? new LocalStorage(env.STORAGE_ROOT);
   const imageService = new ImageService(imageRepository, storage, app.log);
-  const transformService = new ImageTransformService(imageRepository, storage);
+  const transformService = new ImageTransformService(imageRepository, storage, app.log);
 
   app.post(
     '/images',
@@ -118,6 +118,12 @@ export const imageRoutes: FastifyPluginAsync<ImageRoutesOptions> = async (app, o
           400: errorResponseSchema(),
           404: errorResponseSchema(),
           422: errorResponseSchema(),
+        },
+      },
+      config: {
+        rateLimit: {
+          max: env.TRANSFORM_RATE_LIMIT_MAX,
+          timeWindow: '1 minute',
         },
       },
     },
@@ -286,7 +292,7 @@ function variantResponseSchema() {
     properties: {
       id: { type: 'string', format: 'uuid' },
       imageId: { type: 'string', format: 'uuid' },
-      transformations: { type: 'object' },
+      transformations: transformationBodySchema(),
       mimeType: { type: 'string' },
       sizeBytes: { type: 'integer' },
       width: { type: 'integer' },
@@ -315,15 +321,23 @@ function transformationBodySchema() {
     type: 'object',
     additionalProperties: false,
     properties: {
-      resize: { type: 'object' },
-      crop: { type: 'object' },
+      resize: {
+        type: 'object',
+        required: ['width', 'height'],
+        properties: { width: { type: 'integer', minimum: 1 }, height: { type: 'integer', minimum: 1 }, fit: { type: 'string', enum: ['cover', 'contain', 'fill', 'inside', 'outside'] } },
+      },
+      crop: {
+        type: 'object',
+        required: ['width', 'height'],
+        properties: { width: { type: 'integer', minimum: 1 }, height: { type: 'integer', minimum: 1 }, x: { type: 'integer', minimum: 0 }, y: { type: 'integer', minimum: 0 } },
+      },
       rotate: { type: 'integer', minimum: -360, maximum: 360 },
       flip: { type: 'boolean' },
       mirror: { type: 'boolean' },
       format: { type: 'string', enum: ['jpeg', 'png', 'webp'] },
       quality: { type: 'integer', minimum: 1, maximum: 100 },
-      filters: { type: 'object' },
-      watermark: { type: 'object' },
+      filters: { type: 'object', properties: { grayscale: { type: 'boolean' }, sepia: { type: 'boolean' } } },
+      watermark: { type: 'object', required: ['text'], properties: { text: { type: 'string' }, position: { type: 'string' }, opacity: { type: 'number' }, fontSize: { type: 'integer' } } },
     },
   } as const;
 }
