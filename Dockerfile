@@ -22,8 +22,10 @@ RUN npm ci --omit=dev
 COPY --from=builder /app/dist ./dist
 COPY --from=builder /app/drizzle ./drizzle
 
-RUN mkdir -p /app/storage
+RUN mkdir -p /app/storage && chown -R node:node /app
 
 EXPOSE 3000
+
+USER node
 
 CMD ["sh", "-c", "node dist/infrastructure/database/migrate.js && node dist/server.js"]

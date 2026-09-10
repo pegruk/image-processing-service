@@ -7,7 +7,7 @@ services:
       POSTGRES_USER: ${POSTGRES_USER:-image_service}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-image_service}
     ports:
-      - "5432:5432"
+      - "127.0.0.1:5432:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
     healthcheck:
@@ -25,7 +25,7 @@ services:
       PORT: 3000
       LOG_LEVEL: info
       DATABASE_URL: postgres://${POSTGRES_USER:-image_service}:${POSTGRES_PASSWORD:-image_service}@postgres:5432/${POSTGRES_DB:-image_service}
-      JWT_SECRET: ${JWT_SECRET:-change-this-secret-with-at-least-32-characters}
+      JWT_SECRET: ${JWT_SECRET:?JWT_SECRET must be set in .env or the deployment environment}
       JWT_ISSUER: ${JWT_ISSUER:-image-processing-service}
       JWT_AUDIENCE: ${JWT_AUDIENCE:-image-processing-client}
       JWT_EXPIRES_IN: ${JWT_EXPIRES_IN:-15m}
@@ -34,6 +34,10 @@ services:
       MAX_IMAGE_WIDTH: ${MAX_IMAGE_WIDTH:-10000}
       MAX_IMAGE_HEIGHT: ${MAX_IMAGE_HEIGHT:-10000}
       MAX_IMAGE_PIXELS: ${MAX_IMAGE_PIXELS:-40000000}
+      MAX_STORAGE_BYTES_PER_USER: ${MAX_STORAGE_BYTES_PER_USER:-524288000}
+      MAX_CONCURRENT_TRANSFORMS: ${MAX_CONCURRENT_TRANSFORMS:-2}
+      RATE_LIMIT_MAX: ${RATE_LIMIT_MAX:-100}
+      TRANSFORM_RATE_LIMIT_MAX: ${TRANSFORM_RATE_LIMIT_MAX:-10}
       DRIZZLE_MIGRATIONS_DIR: /app/drizzle
     ports:
       - "3000:3000"
