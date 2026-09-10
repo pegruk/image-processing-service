@@ -112,9 +112,14 @@ As rotas de imagem exigem `Authorization: Bearer <token>`.
 | `MAX_STORAGE_BYTES_PER_USER` | `524288000` | Cota total por usuário |
 | `MAX_CONCURRENT_TRANSFORMS` | `2` | Processamentos simultâneos por instância |
 | `RATE_LIMIT_MAX` | `100` | Requisições por IP por minuto |
-| `TRANSFORM_RATE_LIMIT_MAX` | `10` | Transformações por IP por minuto |
 
-Em produção, a aplicação recusa o segredo JWT de desenvolvimento. Os limites de taxa e concorrência são locais à instância; para múltiplas instâncias, use um armazenamento compartilhado para rate limiting e uma fila de processamento.
+Em produção, a aplicação recusa o segredo JWT de desenvolvimento. O rate limiting e o limite de concorrência são locais à instância; para múltiplas instâncias, use um armazenamento compartilhado para rate limiting e uma fila de processamento.
+
+### Limitações conhecidas
+
+A exclusão remove os arquivos antes dos metadados. Se a exclusão no banco falhar após a limpeza do storage, o registro continuará existindo e apontará para um arquivo indisponível. Se a limpeza do storage falhar, os metadados são preservados para que uma nova tentativa de exclusão possa concluí-la. Uma implementação com status de exclusão, tarefas persistentes de limpeza ou reconciliação periódica elimina essa janela de inconsistência.
+
+A cota de armazenamento é verificada antes da gravação, mas não é reservada em transação. Uploads ou transformações simultâneas do mesmo usuário podem ultrapassar a cota. Em um cenário com múltiplas instâncias, a solução é reservar a cota no banco dentro de uma transação ou usar um contador distribuído.
 
 ## Banco e testes
 

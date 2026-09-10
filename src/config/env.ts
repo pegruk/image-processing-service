@@ -22,7 +22,6 @@ export const envSchema = z.object({
   MAX_STORAGE_BYTES_PER_USER: z.coerce.number().int().positive().default(500 * 1024 * 1024),
   MAX_CONCURRENT_TRANSFORMS: z.coerce.number().int().positive().default(2),
   RATE_LIMIT_MAX: z.coerce.number().int().positive().default(100),
-  TRANSFORM_RATE_LIMIT_MAX: z.coerce.number().int().positive().default(10),
   DRIZZLE_MIGRATIONS_DIR: z.string().min(1).default('./drizzle'),
 }).superRefine((value, context) => {
   if (value.NODE_ENV === 'production' && value.JWT_SECRET === insecureDevelopmentJwtSecret) {

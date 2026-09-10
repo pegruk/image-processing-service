@@ -120,12 +120,6 @@ export const imageRoutes: FastifyPluginAsync<ImageRoutesOptions> = async (app, o
           422: errorResponseSchema(),
         },
       },
-      config: {
-        rateLimit: {
-          max: env.TRANSFORM_RATE_LIMIT_MAX,
-          timeWindow: '1 minute',
-        },
-      },
     },
     async (request, reply) => {
       const params = parseParams(request.params);
