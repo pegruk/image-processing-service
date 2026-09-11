@@ -12,7 +12,6 @@ import { imageRoutes } from './modules/images/image.routes';
 import type { ImageRepository } from './modules/images/image.types';
 import type { ObjectStorage } from './infrastructure/storage/storage.port';
 import multipart from '@fastify/multipart';
-import rateLimit from '@fastify/rate-limit';
 import { registerErrorHandler } from './plugins/error-handler';
 
 export interface BuildAppOptions {
@@ -106,12 +105,6 @@ export async function buildApp(options: BuildAppOptions = {}) {
       fileSize: env.MAX_UPLOAD_SIZE_BYTES,
       parts: 1,
     },
-  });
-
-  await app.register(rateLimit, {
-    global: true,
-    max: env.RATE_LIMIT_MAX,
-    timeWindow: '1 minute',
   });
 
   registerErrorHandler(app);

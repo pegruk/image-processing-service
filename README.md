@@ -11,7 +11,7 @@ Construído com TypeScript, Fastify, PostgreSQL, Drizzle ORM e Sharp.
 - Metadados, checksum SHA-256 e arquivos originais separados das variantes.
 - Resize, crop, rotação, espelhamento, filtros, watermark, conversão e qualidade.
 - Isolamento por usuário: recursos de outros usuários respondem `404`.
-- Limites para upload, dimensões, pixels, armazenamento por usuário, taxa de requisições e transformações simultâneas.
+- Limites para upload, dimensões, pixels, armazenamento por usuário e transformações simultâneas.
 - OpenAPI em `/docs`, migrations versionadas, Docker Compose e CI.
 
 ## Arquitetura
@@ -111,9 +111,8 @@ As rotas de imagem exigem `Authorization: Bearer <token>`.
 | `MAX_IMAGE_PIXELS` | `40000000` | Pixels máximos de entrada e saída |
 | `MAX_STORAGE_BYTES_PER_USER` | `524288000` | Cota total por usuário |
 | `MAX_CONCURRENT_TRANSFORMS` | `2` | Processamentos simultâneos por instância |
-| `RATE_LIMIT_MAX` | `100` | Requisições por IP por minuto |
 
-Em produção, a aplicação recusa o segredo JWT de desenvolvimento. O rate limiting e o limite de concorrência são locais à instância; para múltiplas instâncias, use um armazenamento compartilhado para rate limiting e uma fila de processamento.
+Em produção, a aplicação recusa o segredo JWT de desenvolvimento. O limite de concorrência é local à instância; para múltiplas instâncias, use uma fila de processamento compartilhada.
 
 ### Limitações conhecidas
 

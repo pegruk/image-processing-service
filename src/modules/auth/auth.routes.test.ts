@@ -17,6 +17,7 @@ class InMemoryUserRepository implements UserRepository {
       id: randomUUID(),
       username: input.username,
       passwordHash: input.passwordHash,
+      storageUsedBytes: 0,
       createdAt: new Date(),
       updatedAt: new Date(),
     };

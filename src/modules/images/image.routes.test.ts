@@ -20,6 +20,7 @@ class InMemoryUserRepository implements UserRepository {
       id: randomUUID(),
       username: input.username,
       passwordHash: input.passwordHash,
+      storageUsedBytes: 0,
       createdAt: new Date(),
       updatedAt: new Date(),
     };
@@ -46,6 +47,8 @@ class InMemoryImageRepository implements ImageRepository {
       width: input.width,
       height: input.height,
       checksum: input.checksum,
+      deletionState: 'active',
+      deletionRequestedAt: null,
       createdAt: new Date(),
     };
 
@@ -68,7 +71,7 @@ class InMemoryImageRepository implements ImageRepository {
     };
   }
 
-  async findOwnedWithVariants(imageId: string, userId: string): Promise<{ image: Image; variants: ImageVariant[] } | null> {
+  async claimDeletion(imageId: string, userId: string): Promise<{ image: Image; variants: ImageVariant[] } | null> {
     const index = this.images.findIndex((image) => image.id === imageId && image.userId === userId);
 
     if (index < 0) return null;
@@ -81,7 +84,7 @@ class InMemoryImageRepository implements ImageRepository {
     return { image, variants };
   }
 
-  async deleteOwnedById(imageId: string, userId: string): Promise<boolean> {
+  async finalizeDeletion(imageId: string, userId: string): Promise<boolean> {
     const index = this.images.findIndex((image) => image.id === imageId && image.userId === userId);
     if (index < 0) return false;
 
@@ -91,15 +94,12 @@ class InMemoryImageRepository implements ImageRepository {
     return true;
   }
 
-  async getOwnedStorageUsage(userId: string): Promise<number> {
-    const imageIds = new Set(this.images.filter((image) => image.userId === userId).map((image) => image.id));
-    const originalBytes = this.images
-      .filter((image) => image.userId === userId)
-      .reduce((total, image) => total + image.sizeBytes, 0);
-    const variantBytes = this.variants
-      .filter((variant) => imageIds.has(variant.imageId))
-      .reduce((total, variant) => total + variant.sizeBytes, 0);
-    return originalBytes + variantBytes;
+  async reserveStorage(): Promise<boolean> {
+    return true;
+  }
+
+  async releaseStorage(): Promise<void> {
+    return undefined;
   }
 
   async createVariant(input: NewImageVariant): Promise<ImageVariant> {

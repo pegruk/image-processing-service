@@ -47,8 +47,9 @@ describeIntegration('DrizzleImageRepository', () => {
 
     expect(await repository.findOwnedById(ownerImageId, ownerId)).toMatchObject({ id: ownerImageId });
     expect(await repository.findOwnedById(ownerImageId, otherUserId)).toBeNull();
-    expect(await repository.getOwnedStorageUsage(ownerId)).toBe(120);
-    expect(await repository.getOwnedStorageUsage(otherUserId)).toBe(200);
+    expect(await repository.reserveStorage(ownerId, 380, 500)).toBe(true);
+    expect(await repository.reserveStorage(ownerId, 1, 500)).toBe(false);
+    expect(await repository.reserveStorage(otherUserId, 301, 500)).toBe(false);
   });
 });
 

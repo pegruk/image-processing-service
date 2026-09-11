@@ -65,7 +65,7 @@ export class ImageTransformService {
         );
       }
 
-      await this.ensureWithinStorageQuota(userId, output.buffer.length);
+      await this.reserveStorage(userId, output.buffer.length);
 
       const variantId = randomUUID();
       const storageKey = `variants/${image.id}/${variantId}.${output.extension}`;
@@ -91,6 +91,7 @@ export class ImageTransformService {
         } catch (cleanupError: unknown) {
           this.logger.error({ cleanupError, error, storageKey }, 'Failed to clean up unpersisted image variant');
         }
+        await this.imageRepository.releaseStorage(userId, output.buffer.length);
         throw error;
       }
     } finally {
@@ -132,10 +133,8 @@ export class ImageTransformService {
     this.activeTransforms -= 1;
   }
 
-  private async ensureWithinStorageQuota(userId: string, incomingBytes: number): Promise<void> {
-    const currentUsage = await this.imageRepository.getOwnedStorageUsage(userId);
-
-    if (currentUsage + incomingBytes > env.MAX_STORAGE_BYTES_PER_USER) {
+  private async reserveStorage(userId: string, bytes: number): Promise<void> {
+    if (!(await this.imageRepository.reserveStorage(userId, bytes, env.MAX_STORAGE_BYTES_PER_USER))) {
       throw new AppError('O limite de armazenamento do usuário foi atingido.', 'STORAGE_QUOTA_EXCEEDED', 413);
     }
   }

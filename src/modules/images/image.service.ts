@@ -66,6 +66,8 @@ export class ImageService {
     const imageId = randomUUID();
     const temporaryPath = path.join(this.temporaryDirectory, `${imageId}.upload`);
     let storageKey: string | undefined;
+    let storageReserved = false;
+    let reservedBytes = 0;
 
     try {
       const { sizeBytes, checksum } = await this.writeTemporaryFile(input.stream, temporaryPath);
@@ -75,7 +77,9 @@ export class ImageService {
       }
 
       const metadata = await this.validateImage(temporaryPath, sizeBytes);
-      await this.ensureWithinStorageQuota(input.userId, sizeBytes);
+      await this.reserveStorage(input.userId, sizeBytes);
+      storageReserved = true;
+      reservedBytes = sizeBytes;
       const extension = supportedFormats.get(metadata.mimeType);
 
       if (!extension) {
@@ -100,9 +104,12 @@ export class ImageService {
         });
       } catch (error: unknown) {
         await this.deleteAfterPersistenceFailure(storageKey, error);
+        await this.imageRepository.releaseStorage(input.userId, sizeBytes);
+        storageReserved = false;
         throw error;
       }
     } catch (error: unknown) {
+      if (storageReserved) await this.imageRepository.releaseStorage(input.userId, reservedBytes);
       if (isSharpInputError(error)) {
         throw new AppError('O arquivo enviado não é uma imagem válida.', 'INVALID_IMAGE', 422, {
           cause: error,
@@ -160,7 +167,7 @@ export class ImageService {
 
   async delete(userId: string, imageId: string): Promise<void> {
     const validImageId = parseImageId(imageId);
-    const resource = await this.imageRepository.findOwnedWithVariants(validImageId, userId);
+    const resource = await this.imageRepository.claimDeletion(validImageId, userId);
 
     if (!resource) {
       throw new AppError('Imagem não encontrada.', 'IMAGE_NOT_FOUND', 404);
@@ -188,7 +195,7 @@ export class ImageService {
       );
     }
 
-    const deleted = await this.imageRepository.deleteOwnedById(validImageId, userId);
+    const deleted = await this.imageRepository.finalizeDeletion(validImageId, userId);
 
     if (!deleted) {
       this.logger.error({ imageId: resource.image.id }, 'Image files removed but metadata was not deleted');
@@ -269,10 +276,8 @@ export class ImageService {
     }
   }
 
-  private async ensureWithinStorageQuota(userId: string, incomingBytes: number): Promise<void> {
-    const currentUsage = await this.imageRepository.getOwnedStorageUsage(userId);
-
-    if (currentUsage + incomingBytes > env.MAX_STORAGE_BYTES_PER_USER) {
+  private async reserveStorage(userId: string, bytes: number): Promise<void> {
+    if (!(await this.imageRepository.reserveStorage(userId, bytes, env.MAX_STORAGE_BYTES_PER_USER))) {
       throw new AppError(
         'O limite de armazenamento do usuário foi atingido.',
         'STORAGE_QUOTA_EXCEEDED',
@@ -281,6 +286,7 @@ export class ImageService {
     }
   }
 }
+
 
 function sanitizeOriginalFilename(filename: string, fallback: string): string {
   const normalized = filename.normalize('NFKC').replace(/\\/g, '/');
