@@ -105,7 +105,11 @@ export class DrizzleImageRepository implements ImageRepository {
       .select({ variant: imageVariants })
       .from(imageVariants)
       .innerJoin(images, eq(imageVariants.imageId, images.id))
-      .where(and(eq(imageVariants.id, variantId), eq(images.userId, userId)))
+      .where(and(
+        eq(imageVariants.id, variantId),
+        eq(images.userId, userId),
+        eq(images.deletionState, 'active'),
+      ))
       .limit(1);
 
     return result?.variant ?? null;

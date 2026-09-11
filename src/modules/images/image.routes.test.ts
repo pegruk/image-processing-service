@@ -34,6 +34,7 @@ class InMemoryImageRepository implements ImageRepository {
   readonly images: Image[] = [];
   readonly variants: ImageVariant[] = [];
   failVariantCreation = false;
+  reservedStorageBytes = 0;
 
   async create(input: NewImage): Promise<Image> {
     const image: Image = {
@@ -80,6 +81,8 @@ class InMemoryImageRepository implements ImageRepository {
 
     if (!image) return null;
 
+    image.deletionState = 'pending';
+    image.deletionRequestedAt = new Date();
     const variants = this.variants.filter((variant) => variant.imageId === image.id);
     return { image, variants };
   }
@@ -94,12 +97,13 @@ class InMemoryImageRepository implements ImageRepository {
     return true;
   }
 
-  async reserveStorage(): Promise<boolean> {
+  async reserveStorage(_userId: string, bytes: number): Promise<boolean> {
+    this.reservedStorageBytes += bytes;
     return true;
   }
 
-  async releaseStorage(): Promise<void> {
-    return undefined;
+  async releaseStorage(_userId: string, bytes: number): Promise<void> {
+    this.reservedStorageBytes = Math.max(0, this.reservedStorageBytes - bytes);
   }
 
   async createVariant(input: NewImageVariant): Promise<ImageVariant> {
@@ -124,7 +128,9 @@ class InMemoryImageRepository implements ImageRepository {
 
   async findOwnedVariant(variantId: string, userId: string): Promise<ImageVariant | null> {
     const variant = this.variants.find((item) => item.id === variantId);
-    return variant && this.images.some((image) => image.id === variant.imageId && image.userId === userId)
+    return variant && this.images.some(
+      (image) => image.id === variant.imageId && image.userId === userId && image.deletionState === 'active',
+    )
       ? variant
       : null;
   }
@@ -132,8 +138,14 @@ class InMemoryImageRepository implements ImageRepository {
 
 class InMemoryStorage implements ObjectStorage {
   readonly files = new Map<string, Buffer>();
+  failNextPut = false;
 
   async put(key: string, source: Readable): Promise<void> {
+    if (this.failNextPut) {
+      this.failNextPut = false;
+      throw new Error('storage unavailable');
+    }
+
     const chunks: Buffer[] = [];
 
     for await (const chunk of source) {
@@ -395,6 +407,81 @@ describe('image routes', () => {
     expect(response.statusCode).toBe(500);
     expect(response.json()).toMatchObject({ error: { code: 'INTERNAL_SERVER_ERROR' } });
     expect(storage.files.size).toBe(1);
+    await app.close();
+  });
+
+  it('releases a variant storage reservation when writing to storage fails', async () => {
+    const userRepository = new InMemoryUserRepository();
+    const imageRepository = new InMemoryImageRepository();
+    const storage = new InMemoryStorage();
+    const app = await buildApp({ userRepository, imageRepository, storage });
+    const token = await registerAndGetToken(app, 'storage-failure-user');
+    const imageBuffer = await sharp({
+      create: { width: 8, height: 6, channels: 3, background: { r: 40, g: 220, b: 40 } },
+    }).png().toBuffer();
+    const upload = await app.inject({
+      method: 'POST',
+      url: '/images',
+      headers: {
+        authorization: `Bearer ${token}`,
+        'content-type': 'multipart/form-data; boundary=storage-failure-boundary',
+      },
+      payload: makeMultipartBody('storage-failure-boundary', 'file', 'photo.png', 'image/png', imageBuffer),
+    });
+    const reservedBeforeTransform = imageRepository.reservedStorageBytes;
+    storage.failNextPut = true;
+
+    const response = await app.inject({
+      method: 'POST',
+      url: `/images/${upload.json().id}/transform`,
+      headers: { authorization: `Bearer ${token}` },
+      payload: { format: 'webp' },
+    });
+
+    expect(response.statusCode).toBe(500);
+    expect(imageRepository.reservedStorageBytes).toBe(reservedBeforeTransform);
+    expect(storage.files.size).toBe(1);
+    await app.close();
+  });
+
+  it('does not serve a variant while its image deletion is pending', async () => {
+    const userRepository = new InMemoryUserRepository();
+    const imageRepository = new InMemoryImageRepository();
+    const storage = new InMemoryStorage();
+    const app = await buildApp({ userRepository, imageRepository, storage });
+    const token = await registerAndGetToken(app, 'pending-deletion-user');
+    const imageBuffer = await sharp({
+      create: { width: 8, height: 6, channels: 3, background: { r: 220, g: 220, b: 40 } },
+    }).png().toBuffer();
+    const upload = await app.inject({
+      method: 'POST',
+      url: '/images',
+      headers: {
+        authorization: `Bearer ${token}`,
+        'content-type': 'multipart/form-data; boundary=pending-deletion-boundary',
+      },
+      payload: makeMultipartBody('pending-deletion-boundary', 'file', 'photo.png', 'image/png', imageBuffer),
+    });
+    const imageId = upload.json().id as string;
+    const transform = await app.inject({
+      method: 'POST',
+      url: `/images/${imageId}/transform`,
+      headers: { authorization: `Bearer ${token}` },
+      payload: { format: 'webp' },
+    });
+    const variantId = transform.json().id as string;
+    const image = imageRepository.images.find((item) => item.id === imageId);
+
+    if (!image) throw new Error('Expected uploaded image to exist.');
+    image.deletionState = 'pending';
+
+    const response = await app.inject({
+      method: 'GET',
+      url: `/images/${imageId}/variants/${variantId}`,
+      headers: { authorization: `Bearer ${token}` },
+    });
+
+    expect(response.statusCode).toBe(404);
     await app.close();
   });
 });

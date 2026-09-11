@@ -69,9 +69,10 @@ export class ImageTransformService {
 
       const variantId = randomUUID();
       const storageKey = `variants/${image.id}/${variantId}.${output.extension}`;
-      await this.storage.put(storageKey, Readable.from(output.buffer));
 
       try {
+        await this.storage.put(storageKey, Readable.from(output.buffer));
+
         const variant = await this.imageRepository.createVariant({
           id: variantId,
           imageId: image.id,
@@ -91,7 +92,13 @@ export class ImageTransformService {
         } catch (cleanupError: unknown) {
           this.logger.error({ cleanupError, error, storageKey }, 'Failed to clean up unpersisted image variant');
         }
-        await this.imageRepository.releaseStorage(userId, output.buffer.length);
+
+        try {
+          await this.imageRepository.releaseStorage(userId, output.buffer.length);
+        } catch (cleanupError: unknown) {
+          this.logger.error({ cleanupError, error, userId }, 'Failed to release image variant storage reservation');
+        }
+
         throw error;
       }
     } finally {
