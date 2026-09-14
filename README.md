@@ -1,6 +1,8 @@
 # Image Processing Service
 
-API REST para upload, armazenamento e transformação de imagens. O projeto demonstra um fluxo de arquivos completo: autenticação, autorização por proprietário, validação do conteúdo, persistência de metadados e criação de variantes.
+[![CI](https://github.com/pegruk/image-processing-service/actions/workflows/ci.yml/badge.svg)](https://github.com/pegruk/image-processing-service/actions/workflows/ci.yml)
+
+API REST para armazenar imagens e gerar variantes com transformações combináveis. Autenticação JWT, autorização por proprietário, validação do conteúdo e reserva atômica de cota no PostgreSQL acompanham o fluxo de upload e processamento.
 
 Construído com TypeScript, Fastify, PostgreSQL, Drizzle ORM e Sharp.
 
@@ -21,13 +23,36 @@ HTTP routes → services → repositories → PostgreSQL
                      └→ ObjectStorage → filesystem local
 ```
 
-Os módulos de negócio dependem da porta `ObjectStorage`, não do filesystem. Assim, a implementação local pode ser trocada por S3 ou R2 sem alterar rotas e serviços. O PostgreSQL armazena metadados; os binários ficam em chaves relativas, como `originals/{userId}/{imageId}.png`.
+As rotas recebem as requisições; services coordenam validação, processamento e persistência; repositories concentram as consultas ao banco. Schemas Zod validam entradas de negócio e schemas das rotas descrevem a API.
+
+O PostgreSQL armazena proprietário, chave relativa, nome original sanitizado, MIME type, tamanho, dimensões, checksum SHA-256 e datas. Variantes também registram os parâmetros de transformação. Os binários ficam sob `STORAGE_ROOT`:
+
+```text
+originals/{userId}/{imageId}.{extension}
+variants/{imageId}/{variantId}.{extension}
+```
+
+UUIDs compõem os nomes físicos; o nome fornecido pelo cliente não determina o caminho no disco. A interface `ObjectStorage` permite implementar S3/R2. O upload ainda usa arquivos temporários locais durante a validação.
+
+```text
+src/
+├── config/          # Configuração validada a partir do ambiente
+├── infrastructure/  # Banco, migrations e storage
+├── modules/
+│   ├── auth/        # Cadastro e login
+│   ├── images/      # Upload, consulta, exclusão e transformações
+│   └── health/      # Disponibilidade da API e do banco
+├── plugins/         # Autenticação e tratamento de erros
+└── shared/          # Erros da aplicação
+```
 
 ## Executar localmente
 
 Pré-requisitos: Node.js 22+, npm e Docker Compose.
 
 ```bash
+git clone https://github.com/pegruk/image-processing-service.git
+cd image-processing-service
 cp .env.example .env
 npm ci
 docker compose up -d postgres
@@ -43,10 +68,16 @@ A API estará em `http://localhost:3000`.
 Para subir API e banco juntos:
 
 ```bash
-JWT_SECRET="$(openssl rand -hex 32)" docker compose up --build
+openssl rand -hex 32
+# Salve o valor gerado em JWT_SECRET no .env.
+docker compose up --build
 ```
 
 O Compose exige que `JWT_SECRET` esteja definido. Antes de um ambiente público, substitua todos os valores de exemplo no `.env`, principalmente as credenciais do banco e o segredo JWT.
+
+O container aplica as migrations antes de iniciar. No [Swagger UI](http://localhost:3000/docs), faça o cadastro, copie o `token` da resposta e clique em **Authorize**. Depois selecione uma imagem em `POST /images` e teste as transformações.
+
+Se a porta `5432` estiver ocupada por outro PostgreSQL, ajuste o mapeamento do Compose e `DATABASE_URL` para apontar à mesma instância.
 
 ## Fluxo de uso
 
@@ -78,7 +109,7 @@ curl -X POST http://localhost:3000/images/<image-id>/transform \
     "format": "webp",
     "quality": 80,
     "filters": {"grayscale": true},
-    "watermark": {"text":"Meu portfólio","position":"southeast"}
+    "watermark": {"text":"Image Service","position":"southeast"}
   }'
 ```
 
@@ -99,11 +130,27 @@ curl -X POST http://localhost:3000/images/<image-id>/transform \
 
 As rotas de imagem exigem `Authorization: Bearer <token>`.
 
+O multipart transporta os bytes e os campos do arquivo em partes delimitadas. O servidor consome o stream e valida seu conteúdo; o MIME informado pelo cliente não é suficiente para aceitar o upload. O processamento com Sharp é síncrono e cada requisição de transformação preserva o original.
+
+### Respostas e erros
+
+Cadastro, upload e transformação retornam `201`; exclusão concluída retorna `204`. A API usa `400` para entrada inválida, `401` para autenticação, `404` para recurso indisponível, `409` para cadastro duplicado, `413` para limites, `415` para formato não aceito e `422` para transformações inválidas. Falhas internas retornam `500`; saturação do processamento retorna `503`.
+
+Erros possuem `error.code`, `error.message` e `error.requestId`, permitindo correlacionar a requisição com os logs.
+
 ## Configuração e limites
 
 | Variável | Padrão | Finalidade |
 | --- | --- | --- |
 | `DATABASE_URL` | obrigatório | Conexão PostgreSQL |
+| `NODE_ENV` | `development` | Ambiente de execução |
+| `HOST` / `PORT` | `0.0.0.0` / `3000` | Endereço HTTP |
+| `LOG_LEVEL` | `info` | Nível dos logs |
+| `STORAGE_ROOT` | `./storage` | Diretório dos arquivos |
+| `JWT_ISSUER` | `image-processing-service` | Emissor do token |
+| `JWT_AUDIENCE` | `image-processing-client` | Audiência do token |
+| `JWT_EXPIRES_IN` | `15m` | Validade do token |
+| `DRIZZLE_MIGRATIONS_DIR` | `./drizzle` | Diretório das migrations |
 | `JWT_SECRET` | obrigatório | Segredo de assinatura; mínimo de 32 caracteres |
 | `API_BASE_URL` | `http://localhost:3000` | URL exibida no OpenAPI |
 | `MAX_UPLOAD_SIZE_BYTES` | `10485760` | Tamanho máximo por upload |
@@ -114,11 +161,13 @@ As rotas de imagem exigem `Authorization: Bearer <token>`.
 
 Em produção, a aplicação recusa o segredo JWT de desenvolvimento. O limite de concorrência é local à instância; para múltiplas instâncias, use uma fila de processamento compartilhada.
 
-### Limitações conhecidas
+### Consistência e decisões técnicas
 
-A exclusão remove os arquivos antes dos metadados. Se a exclusão no banco falhar após a limpeza do storage, o registro continuará existindo e apontará para um arquivo indisponível. Se a limpeza do storage falhar, os metadados são preservados para que uma nova tentativa de exclusão possa concluí-la. Uma implementação com status de exclusão, tarefas persistentes de limpeza ou reconciliação periódica elimina essa janela de inconsistência.
+A exclusão marca a imagem como `pending` antes da limpeza. Originais e variantes pendentes deixam de ser disponibilizados. Uma nova chamada de exclusão pode retomar a operação; a conclusão remove metadados e desconta a cota em transação.
 
-A cota de armazenamento é verificada antes da gravação, mas não é reservada em transação. Uploads ou transformações simultâneas do mesmo usuário podem ultrapassar a cota. Em um cenário com múltiplas instâncias, a solução é reservar a cota no banco dentro de uma transação ou usar um contador distribuído.
+A cota é reservada por um `UPDATE` condicional atômico no PostgreSQL. Reservas concorrentes são serializadas pelo banco. Falhas de gravação ou persistência acionam a liberação da reserva.
+
+Filesystem e banco não compartilham uma transação. Falhas de compensação são registradas; interrupções do processo podem deixar arquivos órfãos ou reservas pendentes. Não existe reconciliação automática nesta versão. Transformações já em andamento podem concorrer com exclusões e exigem coordenação adicional para garantias fortes de consistência.
 
 ## Banco e testes
 
@@ -128,10 +177,10 @@ npm test
 npm run build
 ```
 
-Os testes unitários e de rotas usam repositórios em memória. Os testes de integração do repositório validam consultas, autorização e cálculo de cota contra PostgreSQL:
+Os testes de rotas usam `Fastify.inject`, repositórios em memória e imagens geradas com Sharp. Testes de storage exercitam o filesystem temporário. Para integração, use um PostgreSQL exclusivo para testes:
 
 ```bash
-docker compose up -d postgres
+export DATABASE_URL='postgres://usuario:senha@localhost:5432/image_service_test'
 npm run db:migrate
 npm run test:integration
 ```
@@ -142,4 +191,8 @@ Para alterar o schema, gere uma migration com `npm run db:generate` e aplique co
 
 O Compose usa volumes nomeados para PostgreSQL e imagens. Isso permite um deploy simples em uma única máquina com disco persistente e backup. Em ambientes sem volume persistente ou com múltiplas instâncias, substitua `LocalStorage` por um adaptador de armazenamento de objetos e mantenha PostgreSQL em uma instância persistente.
 
-O projeto ainda não inclui filas distribuídas, antivírus, métricas/tracing ou URLs assinadas. Essas são extensões naturais quando o volume e o perfil de risco justificarem a complexidade.
+Publicar o repositório no GitHub não hospeda a API. Em plataformas com filesystem efêmero, reinícios e redeploys podem perder arquivos.
+
+Evoluções previstas: adaptadores S3/R2, reconciliação de storage, Redis para cache, BullMQ e workers, rate limiting e observabilidade. Essas extensões devem acompanhar requisitos concretos de volume e operação.
+
+Baseado no desafio [Image Processing Service](https://roadmap.sh/projects/image-processing-service).
