@@ -187,12 +187,4 @@ npm run test:integration
 
 Para alterar o schema, gere uma migration com `npm run db:generate` e aplique com `npm run db:migrate`.
 
-## Deploy
-
-O Compose usa volumes nomeados para PostgreSQL e imagens. Isso permite um deploy simples em uma única máquina com disco persistente e backup. Em ambientes sem volume persistente ou com múltiplas instâncias, substitua `LocalStorage` por um adaptador de armazenamento de objetos e mantenha PostgreSQL em uma instância persistente.
-
-Publicar o repositório no GitHub não hospeda a API. Em plataformas com filesystem efêmero, reinícios e redeploys podem perder arquivos.
-
-Evoluções previstas: adaptadores S3/R2, reconciliação de storage, Redis para cache, BullMQ e workers, rate limiting e observabilidade. Essas extensões devem acompanhar requisitos concretos de volume e operação.
-
 Baseado no desafio [Image Processing Service](https://roadmap.sh/projects/image-processing-service).
